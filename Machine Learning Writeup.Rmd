@@ -1,0 +1,164 @@
+---
+title: "Practical Machine Learning Coursera Assignment"
+author: "Abdul Wadood"
+date: "March 18, 2016"
+output: html_document
+---
+#Background
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. Here we have data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways.
+
+
+#Introduction
+This Machine Learning writeup predicts how well the participants did their exercise (represented by categorical variables, dubbed 'classe' A,B,C,D,E). The report details different model choices for training the predictor, discusses cross validation (no of folds), in & out of sample errors. After confirming accuracy of models they are applied to testing data sets of 20 cases for answering 20 test cases.
+
+
+
+#####Applying all library packages that will be used in the code
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+library(caret)
+library(randomForest)
+library(rpart)
+library(rpart.plot)
+library(rattle)
+library(doParallel)
+require(RGtk2)
+```
+
+
+###Reading data
+```{r Loading & selecting required Data }
+training_data = read.table("pml-training.csv",header = TRUE, sep = ",", na.strings = c("NA", "#DIV/0!"))
+
+#Get Only sensor data and column classe used. Omited the first 7 rows identifying subject's name, date, and time data.
+
+reqColumns = grep(pattern = "_belt|_arm|_dumbbell|_forearm|classe", names(training_data))
+# Checking if there are 153 columns (152 sensor + 1 classe columns). Including classe column specfically.
+length(reqColumns)
+
+data = training_data[, c(reqColumns)]
+dim(data)
+```
+
+###Cleaning data
+```{r Removing NAs}
+# figuring out column sums with NAs and comparing to the max obs
+# Those with non NA sums equal to total no of obs are selected
+NA_data  <- apply(!is.na(data),2, sum) > 19621
+req_data <- data[, NA_data]
+dim(req_data)
+# 53 variables selected. Cant take too many on trainig set anyways, since it will over predict and reduce accuracy of the testing set.
+
+#checking for all TRUE NAs (should be 19,622 = number of obs)
+table(complete.cases(req_data))
+#table(sapply(data[1,], class))
+```
+
+
+###Data Splitting 
+```{r Data Processing,cached= TRUE}
+
+#Splitting into a training data set (75% of the total cases) and a testing data set.
+#This will allow us to estimate the out of sample error of our predictor. 
+
+# Setting seed for reproducibility
+set.seed(03-18-2016)
+
+# Data Partinoning
+Partition_Data <- createDataPartition(y=req_data$classe, p=0.75, list=FALSE)
+
+training <- req_data[Partition_Data,]
+dim(training)
+
+testing <- req_data[-Partition_Data,]
+dim(testing)
+
+```
+
+###Cross Validation & Sample Error Analysis
+```{r Cross Validation & error Analyis, warning=FALSE,cached= TRUE}
+#Using random forest with 2 folds for model fit. Also  calculating time of computation.
+registerDoParallel(4) #Using all 4 cores for faster processing of the train func below
+time <- proc.time()
+cv_rf_fit  = train(classe~.,data=training, method="rf", ntree=200, trControl=trainControl(method="cv", number=2, allowParallel=T, verbose=T), verbose=F)
+proc.time() - time
+
+#predicting on the 25% subset with trained predictor cv_rf_fit (cross validation random forest fit)
+pred_cv_rf_fit<-predict(cv_rf_fit, newdata=testing)
+
+#Out of sample error (25% of training set)
+confusionMatrix(pred_cv_rf_fit, testing$classe)
+#Since the accuracy rate is high for cross validation fold of 2 we do not need a k value of 10. k=10 also takes a LOT of time on my core i7 Mac with 16 Gigs of RAM.
+```
+**Out of sample error (1- Accuracy)%  = 0.45%**
+
+```{r, eval=FALSE, include=FALSE}
+#In sampling error rate (Very high)
+pred_cv_rf_fit_in<-predict(cv_rf_fit, newdata=training)
+confusionMatrix(pred_cv_rf_fit_in, training$classe)$overall
+```
+
+
+###Training the Predictor
+####Using Random Forest
+```{r Training Predictor with Rand Forest, cached= TRUE}
+#Using randomForest function directly to fit the predictor to the training set. Since cross validation accuracy has been proven, not using predict function as it is just a wrapper for randomForest
+
+#Model fitting using random forest with parallel processing
+registerDoParallel(4) #for using all 4 cores
+time <- proc.time()
+(model_rf = foreach(ntree=rep(50, 4),.combine=randomForest::combine,.packages = 'randomForest') %dopar% randomForest(classe~., data = training, ntree=ntree))
+proc.time() - time
+#I tested for different ntree values and from 100 to 500 there is virtually no difference in accuracy value. At ntree= 30 the difference gets under 99% so sticking with ntree= 200
+
+
+#Model fitting using random forest by using once core of PC.
+time <- proc.time()
+model_rf = randomForest(classe~., data=training,ntree = 200)
+proc.time() - time
+#WE see more time is consumed without parallel processing (almost 3 times difference with single core)
+#However Using both methods (with & without doparallel) to predict since some machines might only have single core.
+varImpPlot(model_rf)
+```
+  
+**Mean Decrease Gini showing relative importance of 30 variables. We therefore can safely use the 53 selected or less but definently not anymore to avoid overfitting.**
+```{r}
+
+#Prediction of the model with testing set
+prediction_rf <- predict(model_rf,testing)
+
+
+#Model comparison by Using confusion matrix for testing accuracy
+confusionMatrix(prediction_rf,testing$classe)
+
+```
+**Very High Accuracy of 99.47% achieved with Random Forest**
+
+######Testing other models for cross checking
+#### Using Decision Tree with rpart
+```{r Training predictor with Decision Trees, cached= TRUE}
+#Model fitting 
+model_tree <- rpart(classe ~ ., data=training, method="class")
+
+#prediction
+prediction_tree <- predict(model_tree, testing, type = "class")
+
+#Model comparison by Using confusion matrix for testing accuracy
+confusionMatrix(prediction_tree, testing$classe)
+```
+**Accuracy 75.84%. Much less than random forest.**
+**Therefore choosing to use previous modle_rf for testing set**
+
+### Results of 20 Test Cases (answers for quiz)
+```{r}
+#Loading test case data
+testing_data = read.table("pml-testing.csv",header = TRUE, sep = ",", na.strings = c("NA", "#DIV/0!"))
+
+#prediction
+prediction_testdata <- predict(model_rf, newdata = testing_data)
+prediction_testdata
+```
+**Predictions results (Classe datasets belong to) for 20 test cases, using our predcitor model from training set**
+
+
+
+
